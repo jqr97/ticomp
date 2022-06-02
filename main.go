@@ -17,44 +17,22 @@ func main() {
 		Use:          "ticomp",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			h := handler.NewShadowHandler(cfg)
-
-			err := h.Initialize()
-			if err != nil {
-				return err
-			}
-
-			defer func() {
-				if err := h.Finalize(); err != nil {
-					fmt.Println("Finalize shadow handler failed", err)
-				}
-			}()
-
 			l, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
 			if err != nil {
 				return err
 			}
 
-			fmt.Printf("Serve successfully (mysql -h 127.0.0.1 -P %d -uroot)\n", cfg.Port)
+			fmt.Printf("Serve successfully (mysql -h 127.0.0.1 -P %d -u%s -p)\n", cfg.Port, cfg.User)
 
-			// Accept a new connection once
-			c, err := l.Accept()
-			if err != nil {
-				return err
-			}
-
-			// Create a connection with user root and an empty password.
-			// You can use your own handler to handle command here.
-			conn, err := server.NewConn(c, "root", "", h)
-			if err != nil {
-				return err
-			}
-
-			// as long as the client keeps sending commands, keep handling them
+			// Waiting for MySQL client connect
 			for {
-				if err := conn.HandleCommand(); err != nil {
+				c, err := l.Accept()
+				if err != nil {
 					return err
 				}
+
+				// Serve the new incoming connection
+				go serveConn(cfg, c)
 			}
 		},
 	}
@@ -86,5 +64,36 @@ func main() {
 	if err := cmd.Execute(); err != nil {
 		fmt.Println("Execute command failed", err)
 		os.Exit(2)
+	}
+}
+
+func serveConn(cfg *config.Config, c net.Conn) {
+	h := handler.NewShadowHandler(cfg)
+
+	err := h.Initialize()
+	if err != nil {
+		fmt.Println("Initialize the database connection failed", err, c.RemoteAddr().String())
+		return
+	}
+
+	defer func() {
+		if err := h.Finalize(); err != nil {
+			fmt.Println("Finalize shadow handler failed", err)
+		}
+	}()
+
+	conn, err := server.NewConn(c, cfg.User, cfg.Pass, h)
+	if err != nil {
+		fmt.Println("Establish database connection failed", err, c.RemoteAddr().String())
+		return
+	}
+	defer conn.Close()
+
+	// as long as the client keeps sending commands, keep handling them
+	for {
+		if err := conn.HandleCommand(); err != nil {
+			fmt.Println("Handle client command failed and the connection will be terminated", err)
+			return
+		}
 	}
 }
